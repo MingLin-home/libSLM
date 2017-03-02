@@ -85,19 +85,19 @@ class SLM(BaseEstimator, RegressorMixin):
         X = X.T
         if not X_is_z_score_normalized:
             X = (X - self.data_mean_) / self.data_std_
-        if not self.diag_zero:
-            the_decision_values = A_(X, self.U_, self.V_) + X.T.dot(self.w_) + self.b_
-        else:
-            the_decision_values = A_diag0(self.U_, self.V_, X) + X.T.dot(self.w_) + self.b_
-        pass  # end if
+        the_decision_values = A_(X, self.U_, self.V_) + X.T.dot(self.w_) + self.b_
         return the_decision_values.flatten()
     pass # end def predict_provable_diag_not_zero
 
     def predict_provable_diag_zero(self,X,X_is_z_score_normalized):
-        return 0
+        X = X.T
+        if not X_is_z_score_normalized:
+            X = (X - self.data_mean_) / self.data_std_
+        the_decision_values = A_diag0(self.U_, self.V_, X) + X.T.dot(self.w_) + self.b_
+        return the_decision_values.flatten()
     pass # end def predict_provable_diag_zero
 
-    def predict_greedy_diag_zero(self,X,X_is_z_score_normalized):
+    def predict_greedy_diag_zero(self, X, X_is_z_score_normalized):
         return 0
     pass # end def predict_greedy_diag_zero
 
@@ -121,7 +121,7 @@ class SLM(BaseEstimator, RegressorMixin):
             return self.fit_greedy_diag_zero(X, y, sample_weight, n_more_iter,)
     pass # end def fit
 
-    def fit_provable_diag_not_zero(self, X, y, sample_weight, n_more_iter, X_is_z_score_normalized):
+    def fit_provable_diag_zero(self, X, y, sample_weight, n_more_iter, X_is_z_score_normalized):
         X = X.T
         y = y[:, numpy.newaxis]
         y = numpy.asarray(y, dtype=numpy.float)
@@ -136,8 +136,6 @@ class SLM(BaseEstimator, RegressorMixin):
 
         if not hasattr(self, 'is_init_stage_'):
             self.is_init_stage_ = True
-            self.remaining_init_iter_steps_ = self.max_init_iter_
-            self.remaining_train_iter_steps_ = self.max_iter_
             self.d_ = X.shape[0]
             X_times_sample_weight = n * X * sample_weight.T
 
@@ -167,7 +165,7 @@ class SLM(BaseEstimator, RegressorMixin):
             U, _ = numpy.linalg.qr(numpy.random.randn(self.d_, self.rank_M))
             self.U_ = U
             self.V_ = numpy.zeros(U.shape)
-            self.w_ = numpy.zeros((self.d, 1))
+            self.w_ = numpy.zeros((self.d_, 1))
             self.b_ = 0
             # end if
 
@@ -272,7 +270,185 @@ class SLM(BaseEstimator, RegressorMixin):
         return self
     pass # end def fit_provable_diag_not_zero
 
-    def fit_provable_diag_zero(self, X, y, sample_weight, n_more_iter, X_is_z_score_normalized):
+    def fit_provable_diag_not_zero(self, X, y, sample_weight, n_more_iter, X_is_z_score_normalized):
+        X = X.T
+        y = y[:, numpy.newaxis]
+        y = numpy.asarray(y, dtype=numpy.float)
+        n = X.shape[1]
+
+        if sample_weight is None:
+            sample_weight = numpy.ones((n,))
+            sample_weight = sample_weight / numpy.sum(sample_weight)
+        sample_weight = sample_weight[:, numpy.newaxis]
+
+        X_new = None
+
+        if not hasattr(self,'is_init_stage_'):
+            self.is_init_stage_ = True
+            self.d_ = X.shape[0]
+            X_times_sample_weight = n * X * sample_weight.T
+
+            if not X_is_z_score_normalized:
+                self.data_mean_ = X_times_sample_weight.mean(axis=1, keepdims=True)
+                X_new = X - self.data_mean_
+            else:
+                self.data_mean_ = numpy.zeros((X.shape[0],1))
+                X_new = X
+            X_weighted_std = numpy.sqrt(n * numpy.mean((X_new ** 2) * sample_weight.T, axis=1, keepdims=True))
+
+            if not X_is_z_score_normalized:
+                self.data_std_ = numpy.maximum(X_weighted_std, 1e-12)
+                X_new /= self.data_std_
+            else:
+                self.data_std_ = numpy.ones((X.shape[0],1))
+
+            Xp2 = X_new ** 2
+            Xp3 = Xp2*X_new
+            Xp4 = Xp3 * X_new
+            if self.using_cache:
+                self.cached_Xp2_ = Xp2
+            # end if self.using_cache
+
+            self.data_moment3_ = numpy.mean(n * Xp3 * sample_weight.T, axis=1, keepdims=True)
+            self.data_moment4_ = numpy.mean(n * Xp4 * sample_weight.T, axis=1, keepdims=True)
+
+            tmp_A = numpy.zeros((2, 2, self.d_))
+            tmp_A[0, 0, :] = 1
+            tmp_A[0, 1, :] = self.data_moment3_.ravel()
+            # tmp_A[0, 2, :] = self.data_moment4.ravel()
+            tmp_A[1, 0, :] = self.data_moment3_.ravel()
+            tmp_A[1, 1, :] = self.data_moment4_.ravel() - 1
+            # tmp_A[1, 2, :] = self.data_moment5.ravel() - self.data_moment3.ravel()
+
+            tmp_b = numpy.zeros((2, 1, self.d_))
+            tmp_b[0, 0, :] = self.data_moment3_.ravel()
+            tmp_b[1, 0, :] = self.data_moment4_.ravel() - 3
+
+            tmp_bw = numpy.zeros((2, 1, self.d_))
+            tmp_bw[0, 0, :] = 1
+            tmp_bw[1, 0, :] = 0
+
+            self.Z_ = numpy.zeros((self.d_, 2))
+            self.G_ = numpy.zeros((self.d_, 2))
+            sv_record = numpy.zeros((self.d_,))
+            for i in xrange(self.d_):
+                tmpu_u, tmp_s, tmp_v = numpy.linalg.svd(tmp_A[:, :, i], full_matrices=False)
+                sv_record[i] = tmp_s[1]
+                if tmp_s[1] < 0.01:
+                    print 'warning! small singular value when computing Z and G! sv = %f' % (tmp_s[1])
+            sv_threshold = numpy.max(sv_record)*1e-3
+            for i in xrange(self.d_):
+                pinv_tmpA = numpy.linalg.pinv(tmp_A[:, :, i], sv_threshold)
+                self.G_[i, :] = numpy.ravel(pinv_tmpA.dot(tmp_bw[:, :, i]))
+                self.Z_[i, :] = numpy.ravel(pinv_tmpA.dot(tmp_b[:, :, i]))
+
+            U, _ = numpy.linalg.qr(numpy.random.randn(self.d_, self.rank_M))
+            self.U_ = U
+            self.V_ = numpy.zeros(U.shape)
+            self.w_ = numpy.zeros((self.d_,1))
+            self.b_ = 0
+        pass # end if
+
+        if X_is_z_score_normalized == False and X_new is None:
+            X = (X - self.data_mean_) / self.data_std_
+        if X_is_z_score_normalized == False and X_new is not None:
+            X = X_new
+
+        if self.using_cache:
+            Xp2 = self.cached_Xp2_
+        else:
+            Xp2 = X**2
+
+        p0 = numpy.sum(y)
+        p1 = X.dot(y)
+        p2 = Xp2.dot(y)
+
+        if self.is_init_stage_:
+            self.is_init_stage_ = False
+            for t in xrange(self.max_init_iter):
+                U_new = mathcal_M_(n * y * sample_weight, self.U_, X, self.Z_, p0, p1, p2, ) / (2 * n)
+                U_new,_ = numpy.linalg.qr(U_new)
+                if numpy.sum(numpy.abs(self.U_-U_new)) < self.init_tol:
+                    self.U_ = U_new
+                    print 'early stop in initialzation'
+                    break
+                # end if numpy.sum(numpy.abs(self.U-U_new)) < self.init_tol:
+                self.U_ = U_new
+            # end for ite_count in xrange(n_more_iter):
+
+            # update V
+            V = mathcal_M_(n * y * sample_weight, self.U_, X, self.Z_, p0, p1, p2) / (2 * n) * self.learning_rate
+            self.V_ = V
+
+            # update w and b
+            w_new = mathcal_W_(self.G_, p0, p1, p2) / n * self.learning_rate
+            self.w_ = w_new
+            b = (numpy.mean(y) - numpy.sum(self.U_ * self.V_)) * self.learning_rate
+            self.b_ = b
+        pass # end if self.is_init_stage_
+
+        if not self.is_init_stage_:
+            if n_more_iter is None:
+                the_num_iter = self.max_iter
+            else:
+                the_num_iter = n_more_iter
+
+            U = self.U_
+            V = self.V_
+            w = self.w_
+            b = self.b_
+
+            for t in xrange(the_num_iter):
+                hat_y = A_(X, U, V) + X.T.dot(w) + b
+                dy = y - hat_y
+                dy = n * dy * sample_weight
+                p0 = numpy.sum(dy)
+                p1 = X.dot(dy)
+                p2 = Xp2.dot(dy)
+
+                # update U
+                U_new = mathcal_M_(dy, U, X, self.Z_, p0, p1, p2) / (2 * n) * self.learning_rate + \
+                        U.dot(V.T.dot(U)) / 2 + V.dot(U.T.dot(U)) / 2
+                # V_new = U_new
+                U_new, _ = numpy.linalg.qr(U_new)
+
+                # update V
+                V_new = mathcal_M_(dy, U_new, X, self.G_, p0, p1, p2) / (2 * n) * self.learning_rate + \
+                        U.dot(V.T.dot(U_new)) / 2 + V.dot(U.T.dot(U_new)) / 2
+
+                # update w and b
+                hat_y = A_(X, U_new, V_new) + X.T.dot(w) + b
+                dy = y - hat_y
+                dy = n * dy * sample_weight
+                p0 = numpy.sum(dy)
+                p1 = X.dot(dy)
+                p2 = Xp2.dot(dy)
+
+                w_new = mathcal_W_(self.G_, p0, p1, p2) / n * self.learning_rate + w
+
+                b_new = numpy.mean(dy)*self.learning_rate + b
+
+                if numpy.sum(numpy.abs(U-U_new))<self.tol and numpy.sum(numpy.abs(V-V_new))<self.tol and numpy.sum(numpy.abs(w-w_new))<self.tol and numpy.abs(b-b_new)<self.tol:
+                    U = U_new
+                    V = V_new
+                    w = w_new
+                    b = b_new
+                    print 'early stop'
+                    break
+                # end if ... < tol
+
+                # update old with new variances
+                U = U_new
+                V = V_new
+                w = w_new
+                b = b_new
+            # end for t
+
+            self.U_ = U
+            self.V_ = V
+            self.w_ = w
+            self.b_ = b
+        pass # end if not self.is_init_stage_:
         return self
     pass # end def fit_provable_diag_zero
 
