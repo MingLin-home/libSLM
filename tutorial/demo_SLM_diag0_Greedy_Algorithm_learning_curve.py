@@ -1,5 +1,6 @@
 '''
-Generate synthetic dataset and train SLM using provable algorithm. Suppose the second order coefficient matrix of the SLM is diagonal free.
+Generate synthetic dataset and train SLM using greedy algorithm. Suppose the second order coefficient matrix of the SLM is diagonal free.
+Note that the greedy algorithm only accepts sparse input.
 Show the learning curves along iteration.
 
 @author: Ming Lin
@@ -11,6 +12,7 @@ import sys
 import matplotlib.pyplot as plt
 import sklearn.metrics
 import sklearn.preprocessing
+import scipy.sparse
 
 sys.path.append('../')
 import libSLM
@@ -41,13 +43,13 @@ def train(export_filename):
         n_trainset = 20 * rank_k * dim # size of training set
         n_testset = 10000 # size of testing set
 
-        # # ----- Generate training/testing instance from truncated Gaussian distribution ----- #
-        X = numpy.random.randn(n_trainset, dim) # training set instances
-        X[X>0.1] = 0.1
-        X_test = numpy.random.randn(n_testset, dim) # testing set instances
-        X_test[X_test > 0.1] = 0.1
-        X = sklearn.preprocessing.scale(X, axis=0)
-        X_test = sklearn.preprocessing.scale(X_test, axis=0)
+        # # ----- Generate sparse training/testing instance from Bernoulli distribution ----- #
+        bernoulli_p = 0.1
+        X = numpy.random.binomial(1,bernoulli_p,size=(n_trainset,dim))/numpy.sqrt(dim*bernoulli_p) # training set instances
+        X_test = numpy.random.binomial(1, bernoulli_p, size=(n_testset, dim))/numpy.sqrt(dim*bernoulli_p) # testing set instances
+
+        X = scipy.sparse.csr_matrix(X)
+        X_test = scipy.sparse.csr_matrix(X_test)
 
         # ---------- Synthetic $M^*$ and $w^*$ as our ground-truth gFM model
         U_true = numpy.random.randn(dim, rank_k) / numpy.sqrt(dim)
@@ -55,16 +57,16 @@ def train(export_filename):
 
         # generate true labels for training
         the_bias_term = -0.5
-        y = X.dot(w_true) + libSLM.A_diag0(U_true, U_true, X.T) + the_bias_term
+        y = X.dot(w_true) + libSLM.A_diag0_sparse(U_true, U_true, X.T, numpy.asarray(X.T.mean(axis=1))) + the_bias_term
         y = y.flatten()
 
         # generate true labels for testing
-        y_test = X_test.dot(w_true) + libSLM.A_diag0(U_true, U_true, X_test.T) + the_bias_term
+        y_test = X_test.dot(w_true) + libSLM.A_diag0_sparse(U_true, U_true, X_test.T, numpy.asarray(X_test.T.mean(axis=1))) + the_bias_term
         y_test = y_test.flatten()
 
         # ----- create an SLM estimator ----- #
         the_estimator = libSLM.SLM(rank_M=rank_k, max_iter=total_iteration, tol=1e-6, max_init_iter=max_init_iter, init_tol=1e-2, lambda_w=0, lambda_M=0,
-                                   using_cache=True, solver_algorithm='Provable', learning_rate=1.0, diag_zero=True, truncate_y=False)
+                                   using_cache=True, solver_algorithm='Greedy', learning_rate=numpy.inf, diag_zero=True, truncate_y=False)
 
         # Initialize gFM with no iteration. This will assign memory space for U,V,w without iteration.
         the_estimator.fit(X, y, n_more_iter=0)
@@ -103,7 +105,7 @@ def train(export_filename):
 
 
 if __name__ == '__main__':
-    export_filename = './SLM_diag0_Provable_Alg_learning_curve.npz'
+    export_filename = './SLM_diag0_Greedy_Alg_learning_curve.npz'
     train(export_filename)
 
     the_results = numpy.load(export_filename)
@@ -113,7 +115,7 @@ if __name__ == '__main__':
     testset_error_record = the_results['testset_error_record']
 
     # plot curves
-    export_figname = './SLM_diag0_Provable_Alg_learning_curve.png'
+    export_figname = './SLM_diag0_Greedy_Alg_learning_curve.png'
     plt.semilogy(record_iteration_axis, numpy.mean(trainset_error_record, axis=0), '-xb', label='train error')
     plt.semilogy(record_iteration_axis, numpy.mean(testset_error_record, axis=0), '-xr', label='test error')
     plt.legend()

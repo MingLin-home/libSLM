@@ -9,6 +9,7 @@ We assume that M is rank k.
 """
 import sklearn.decomposition
 from sklearn.base import BaseEstimator, RegressorMixin
+import scipy.sparse
 import numpy
 
 
@@ -17,7 +18,8 @@ class SLM(BaseEstimator, RegressorMixin):
     The second order linear model estimator.
     """
     def __init__(self, rank_M=4, max_iter=50, tol=1e-6, max_init_iter=20, init_tol=1e-2, lambda_w=0, lambda_M=0,
-                 using_cache=True, solver_algorithm='Greedy', learning_rate=None, diag_zero=None, capped_y=None):
+                 using_cache=True, solver_algorithm='Greedy', als_max_iter_w = 10, als_max_iter_M = 1,
+                 learning_rate=None, diag_zero=None, truncate_y=None, ):
         """
         Initialize the SLM estimator.
         :param rank_M: The rank of the second order coefficient matrix M
@@ -32,9 +34,11 @@ class SLM(BaseEstimator, RegressorMixin):
         'Provable' use the provable algorithm but may be much slower than 'Greedy' in real-world datasets. 'Provable' algorithm only accepts dense features.
         :param learning_rate: the learning rate. Default value: 1) If solver_algorithm='Greedy', learning_rate is greedily
          selected. 2) solver_algorithm='Provable', learning_rate=1.0
+        :param als_max_iter_w: When using 'Greedy' algorithm, the number of iterations to compute the least square solution of w
+        :param als_max_iter_M: When using 'Greedy' algorithm, the number of iterations to compute the least square solution of M
         :param diag_zero: True or False. Whether M is assumed to be diagonal-zero. diag_zeor=True is a necessary assumption when learning non-MIP distribution.
         Default value: 1) If solver_algorithm='Greedy', diag_zero=True; 2) If solver_algorithm='Provable', diag_zero=False
-        :param capped_y: True of False. When training, whether thresholding the predicted y into [-1,+1]. Only valid in 'Greedy' algorithm.
+        :param truncate_y: True of False. When training, whether thresholding the predicted y into [-1,+1]. Only valid in 'Greedy' algorithm.
         """
         self.rank_M = rank_M
         self.max_iter = max_iter
@@ -45,9 +49,11 @@ class SLM(BaseEstimator, RegressorMixin):
         self.lambda_M = lambda_M
         self.using_cache = using_cache
         self.solver_algorithm = solver_algorithm
+        self.als_max_iter_w = als_max_iter_w
+        self.als_max_iter_M = als_max_iter_M
         self.learning_rate = learning_rate
         self.diag_zero = diag_zero
-        self.capped_y=True
+        self.truncate_y=True
 
         if self.learning_rate is None:
             if solver_algorithm=='Greedy': self.learning_rate=numpy.inf
@@ -57,9 +63,9 @@ class SLM(BaseEstimator, RegressorMixin):
             if solver_algorithm=='Greedy': self.diag_zero=True
             else: self.diag_zero = False
 
-        if self.capped_y is None:
-            if solver_algorithm=='Greedy': self.capped_y=True
-            else: self.capped_y = False
+        if self.truncate_y is None:
+            if solver_algorithm=='Greedy': self.truncate_y=True
+            else: self.truncate_y = False
 
         pass
 
@@ -98,7 +104,11 @@ class SLM(BaseEstimator, RegressorMixin):
     pass # end def predict_provable_diag_zero
 
     def predict_greedy_diag_zero(self, X, X_is_z_score_normalized):
-        return 0
+        X = X.T
+        X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
+        the_decision_values = numpy.asarray(
+            A_diag0_sparse(self.U_, self.V_, X, self.data_mean_) + X.T.dot(self.w_) + self.b_ - self.data_mean_.T.dot(self.w_))
+        return the_decision_values.flatten()
     pass # end def predict_greedy_diag_zero
 
 
@@ -107,7 +117,7 @@ class SLM(BaseEstimator, RegressorMixin):
         """
         Train/Fit the estimator with training data {X,y}
         :param X: The feature matrix. Should be a (n,d) numpy.ndarray, i.e., each row presents an instance, each column presents a feature.
-        :param y: the label vector. Should be an (n,) numpy.ndarray
+        :param y: the label vector. Should be an (n,) numpy.ndarray. For classification problem, y should be in set {-1,+1}
         :sample_weight y: the weights of each training instances. Should be an (n,) numpy.ndarray. Usually used in Boosting.
         :param n_more_iter: The number of iterations in this fit() call. Will overwrite max_iter if not None
         :param X_is_z_score_normalized: whether X is z-score normalized. If not, will performance z-score normalization automatically at the beginning of fit()
@@ -454,6 +464,120 @@ class SLM(BaseEstimator, RegressorMixin):
 
 
     def fit_greedy_diag_zero(self, X, y, sample_weight, n_more_iter,):
+        X = X.T
+        y = y[:, numpy.newaxis]
+        y = numpy.asarray(y, dtype=numpy.float)
+        n = X.shape[1]
+
+        reg_w = float(self.lambda_w) / n
+        reg_M = float(self.lambda_M) / n
+
+        if n_more_iter is None: n_more_iter = self.max_iter
+
+        if not hasattr(self, 'has_initialized_'):
+            self.has_initialized_ = True
+
+            tmp_data_mean_ = numpy.asarray(X.mean(axis=1))
+            tmp_data_std_ = numpy.sqrt(numpy.asarray(X.power(2).mean(axis=1)) - tmp_data_mean_ ** 2)
+            self.fea_sel_bool_ = tmp_data_std_ > 1e-2
+
+            new_X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
+            tmp_data_mean_ = numpy.asarray(new_X.mean(axis=1))
+            self.data_std_ = numpy.sqrt(numpy.asarray(new_X.power(2).mean(axis=1)) - tmp_data_mean_ ** 2)
+            self.data_mean_ = numpy.asarray(new_X.mean(axis=1))
+            # self.data_moment3 = numpy.asarray(new_X.power(3).mean(axis=1))
+            # self.data_moment3 -= 3 * self.data_mean_ * numpy.asarray(new_X.power(2).mean(axis=1))
+            # self.data_moment3 -= 2 * self.data_mean_ ** 3
+
+            self.d_ = new_X.shape[0]
+            U, _ = numpy.linalg.qr(numpy.random.randn(self.d_, self.rank_M))
+            self.U_ = U
+            self.V_ = numpy.zeros(U.shape)
+            self.w_ = numpy.zeros((self.d_, 1))
+            self.b_ = 0
+        pass # end if not hasattr(self, 'has_initialized_')
+
+
+        X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
+        X_power_2 = X.power(2)
+
+        U = self.U_
+        V = self.V_
+        w = self.w_
+        b = self.b_
+        hat_y = numpy.asarray(A_diag0_sparse(U,V,X,self.data_mean_) + X.T.dot(w) + b)-self.data_mean_.T.dot(w)
+
+        truncated_y = hat_y
+        if self.truncate_y:
+            truncated_y[hat_y>1]=1
+            truncated_y[hat_y<-1] = -1
+
+
+        for t in xrange(n_more_iter):
+            # als w
+            for als_count in xrange(self.als_max_iter_w):
+                dy = truncated_y -y
+                X_dy = numpy.asarray(X.dot(dy) - self.data_mean_*numpy.sum(dy))  # X.dot(dy)
+                grad_t = X_dy / n + reg_w *w
+                XT_grad_t = numpy.asarray(X.T.dot(grad_t)) - self.data_mean_.T.dot(grad_t)
+                learning_rate_w_ = ( grad_t.T.dot( X_dy )/n + reg_w*numpy.sum(grad_t*w) )/( numpy.linalg.norm(XT_grad_t)**2/n + reg_w*numpy.linalg.norm(grad_t)**2+1e-10)
+                learning_rate_w_ = numpy.min([self.learning_rate,learning_rate_w_])
+                w_new = w - learning_rate_w_*grad_t
+                hat_y = hat_y-learning_rate_w_*(XT_grad_t )
+                truncated_y = hat_y
+                if self.truncate_y:
+                    truncated_y[hat_y > 1] = 1
+                    truncated_y[hat_y < -1] = -1
+                w = w_new
+
+                # update b
+                delta_b = float(numpy.sum(y - truncated_y))/n
+                b_new = b + delta_b
+                hat_y = hat_y + delta_b
+                truncated_y = hat_y
+                if self.truncate_y:
+                    truncated_y[hat_y > 1] = 1
+                    truncated_y[hat_y < -1] = -1
+                b = b_new
+            pass # end for als_count in xrange(self.als_max_iter_w)
+
+            # update U,V
+            for als_count in xrange(self.als_max_iter_M):
+                dy = truncated_y -y
+                p0 = numpy.sum(dy)
+                # p1 = X.dot(dy) - self.data_mean_ * numpy.sum(dy)
+                # cache_1 = self.data_moment3 * p1 + p0
+                cache_1 = p0
+                ApA_dy_Ut = numpy.asarray(ApA_diag0_sparse(dy, U, X, self.data_mean_)) - cache_1*U
+                grad_UV = (ApA_dy_Ut/n + reg_M*V) # grad
+                grad_diag = (numpy.asarray(X_power_2.dot(dy)))/n*U
+                grad_diag -= 2*self.data_mean_*(numpy.asarray(X.dot(dy)))/n*U
+                grad_diag += self.data_mean_**2 * numpy.sum(dy) / n * U
+                grad_t = grad_UV - grad_diag
+                A_Ut_grad_t = numpy.asarray(A_diag0_sparse(U,grad_t,X,self.data_mean_))
+
+                learning_rate_M_ = (dy.T.dot(A_Ut_grad_t)/n + reg_M*numpy.sum(grad_t*V))/( numpy.linalg.norm(A_Ut_grad_t)**2/n + reg_M*numpy.linalg.norm(grad_t)**2+1e-8)
+                learning_rate_M_ = numpy.min([self.learning_rate, learning_rate_M_])
+                V_new = V - learning_rate_M_*grad_t
+                hat_y = hat_y - learning_rate_M_*A_Ut_grad_t
+                truncated_y = hat_y
+                if self.truncate_y:
+                    truncated_y[hat_y > 1] = 1
+                    truncated_y[hat_y < -1] = -1
+
+                Q, R = numpy.linalg.qr(V_new)
+                V_new = U.dot(R.T)
+                U_new = Q
+                U = U_new
+                V = V_new
+            pass # end for als_count in xrange(self.als_max_iter_M):
+        pass # end for t
+
+        self.U_ = U
+        self.V_ = V
+        self.w_ = w
+        self.b_ = b
+
         return self
     pass  # end def fit_greedy_diag_zero
 
@@ -552,3 +676,49 @@ def A_diag0(U, V, X):
     return z-z_diag
 pass # end def
 
+def ApA_diag0_sparse(y, U, X, data_mean):
+    # type: (numpy.ndarray, numpy.ndarray, numpy.ndarray,) -> numpy.ndarray
+    """
+    return A'A(y)*U= (\sum_i x_i y_i x_i' )*U
+    :param y:
+    :param U:
+    :param X:
+    :return:
+    """
+    XTdotU = numpy.asarray(X.T.dot(U))
+    data_meanTdotU = data_mean.T.dot(U)
+
+    r = X.dot(y*XTdotU) - data_mean.dot(y.T.dot(XTdotU))
+    r -= X.dot(y).dot(data_meanTdotU)
+    r += numpy.sum(y) * data_mean.dot(data_meanTdotU)
+
+    return numpy.asarray(r)
+
+
+pass # end def
+
+def A_diag0_sparse(U, V, X,data_mean):
+    # type: (numpy.ndarray, numpy.ndarray, numpy.ndarray,) -> numpy.ndarray
+    """
+    return A(UV' - diag(UV')) = (X'U * X'V) 1 - (X*(((U*V)1)*X))1
+    :param U:
+    :param V:
+    :param X:
+    :return:
+    """
+    n = X.shape[1]
+    XTdotU = numpy.asarray(X.T.dot(U))
+    XTdotV = numpy.asarray(X.T.dot(V))
+    data_meanTdotU = numpy.asarray(data_mean.T.dot(U))
+    data_meanTdotV = numpy.asarray(data_mean.T.dot(V))
+    sum_UV = numpy.sum(U*V,axis=1,keepdims=True)
+    z = numpy.sum(XTdotU *XTdotV, axis=1, keepdims=True)
+    z -= numpy.sum( data_meanTdotU*XTdotV, axis=1, keepdims=True)
+    z -= numpy.sum( XTdotU * data_meanTdotV, axis=1, keepdims=True)
+    z += numpy.sum(data_meanTdotU *data_meanTdotV)
+    z_diag = numpy.asarray(X.T.power(2).dot(sum_UV))
+    z_diag -= 2*numpy.asarray(X.T.dot(data_mean * sum_UV))
+    z_diag +=  numpy.asarray(numpy.sum( (data_mean**2)*(sum_UV), axis=0, keepdims=True).T)
+
+    return numpy.asarray(z-z_diag)
+pass # end def

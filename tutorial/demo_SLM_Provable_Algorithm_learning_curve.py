@@ -62,7 +62,7 @@ def train(export_filename):
 
         # ----- create an SLM estimator ----- #
         the_estimator = libSLM.SLM(rank_M=rank_k, max_iter=total_iteration, tol=1e-6, max_init_iter=max_init_iter, init_tol=1e-2, lambda_w=0, lambda_M=0,
-                 using_cache=True, solver_algorithm='Provable', learning_rate=1.0, diag_zero=False, capped_y=False)
+                                   using_cache=True, solver_algorithm='Provable', learning_rate=1.0, diag_zero=False, truncate_y=False)
 
         # Initialize gFM with no iteration. This will assign memory space for U,V,w without iteration.
         the_estimator.fit(X, y, n_more_iter=0)
