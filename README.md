@@ -1,5 +1,5 @@
-# libSLM: A toolbox for the Second Order Linear Model (SLM)
-The libSLM implements several solvers for the second order linear model proposed by our paper "The Second Order Linear Model" [arXiv](https://arxiv.org/abs/1703.00598). 
+# libSLM: A Toolbox for the Second Order Linear Model (SLM)
+The libSLM implements several solvers for the second order linear model proposed by our paper "The Second Order Linear Model" [\[arXiv\]](https://arxiv.org/abs/1703.00598). 
 
 # Installation
 
