@@ -37,7 +37,7 @@ class SLM(BaseEstimator, RegressorMixin):
         :param als_max_iter_w: When using 'Greedy' algorithm, the number of iterations to compute the least square solution of w
         :param als_max_iter_M: When using 'Greedy' algorithm, the number of iterations to compute the least square solution of M
         :param diag_zero: True or False. Whether M is assumed to be diagonal-zero. diag_zeor=True is a necessary assumption when learning non-MIP distribution.
-        Default value: 1) If solver_algorithm='Greedy', diag_zero=True; 2) If solver_algorithm='Provable', diag_zero=False
+        Default value: 1) If solver_algorithm='Greedy', diag_zero must be 'True';  2) If solver_algorithm='Provable', diag_zero=False
         :param truncate_y: True of False. When training, whether thresholding the predicted y into [-1,+1]. Only valid in 'Greedy' algorithm.
         """
         self.rank_M = rank_M
@@ -53,7 +53,7 @@ class SLM(BaseEstimator, RegressorMixin):
         self.als_max_iter_M = als_max_iter_M
         self.learning_rate = learning_rate
         self.diag_zero = diag_zero
-        self.truncate_y=True
+        self.truncate_y = truncate_y
 
         if self.learning_rate is None:
             if solver_algorithm=='Greedy': self.learning_rate=numpy.inf
@@ -105,7 +105,7 @@ class SLM(BaseEstimator, RegressorMixin):
 
     def predict_greedy_diag_zero(self, X, X_is_z_score_normalized):
         X = X.T
-        X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
+        # X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
         the_decision_values = numpy.asarray(
             A_diag0_sparse(self.U_, self.V_, X, self.data_mean_) + X.T.dot(self.w_) + self.b_ - self.data_mean_.T.dot(self.w_))
         return the_decision_values.flatten()
@@ -463,7 +463,7 @@ class SLM(BaseEstimator, RegressorMixin):
     pass # end def fit_provable_diag_zero
 
 
-    def fit_greedy_diag_zero(self, X, y, sample_weight, n_more_iter,):
+    def fit_greedy_diag_zero(self, X, y, sample_weight=None, n_more_iter=None,):
         X = X.T
         y = y[:, numpy.newaxis]
         y = numpy.asarray(y, dtype=numpy.float)
@@ -476,18 +476,20 @@ class SLM(BaseEstimator, RegressorMixin):
 
         if not hasattr(self, 'has_initialized_'):
             self.has_initialized_ = True
+            self.U_not_initialized_ = True
 
-            tmp_data_mean_ = numpy.asarray(X.mean(axis=1))
-            tmp_data_std_ = numpy.sqrt(numpy.asarray(X.power(2).mean(axis=1)) - tmp_data_mean_ ** 2)
-            self.fea_sel_bool_ = tmp_data_std_ > 1e-2
+            # tmp_data_mean_ = numpy.asarray(X.mean(axis=1))
+            # tmp_data_std_ = numpy.sqrt(numpy.asarray(X.power(2).mean(axis=1)) - tmp_data_mean_ ** 2)
+            # self.fea_sel_bool_ = tmp_data_std_ > 1e-2
 
-            new_X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
+            # new_X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
+            new_X = X
             tmp_data_mean_ = numpy.asarray(new_X.mean(axis=1))
             self.data_std_ = numpy.sqrt(numpy.asarray(new_X.power(2).mean(axis=1)) - tmp_data_mean_ ** 2)
             self.data_mean_ = numpy.asarray(new_X.mean(axis=1))
-            # self.data_moment3 = numpy.asarray(new_X.power(3).mean(axis=1))
-            # self.data_moment3 -= 3 * self.data_mean_ * numpy.asarray(new_X.power(2).mean(axis=1))
-            # self.data_moment3 -= 2 * self.data_mean_ ** 3
+            self.data_moment3 = numpy.asarray(new_X.power(3).mean(axis=1))
+            self.data_moment3 -= 3 * self.data_mean_ * numpy.asarray(new_X.power(2).mean(axis=1))
+            self.data_moment3 -= 2 * self.data_mean_ ** 3
 
             self.d_ = new_X.shape[0]
             U, _ = numpy.linalg.qr(numpy.random.randn(self.d_, self.rank_M))
@@ -498,8 +500,8 @@ class SLM(BaseEstimator, RegressorMixin):
         pass # end if not hasattr(self, 'has_initialized_')
 
 
-        X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
-        X_power_2 = X.power(2)
+        # X = X[numpy.nonzero(self.fea_sel_bool_)[0], :]
+        # X_power_2 = X.power(2)
 
         U = self.U_
         V = self.V_
@@ -507,7 +509,7 @@ class SLM(BaseEstimator, RegressorMixin):
         b = self.b_
         hat_y = numpy.asarray(A_diag0_sparse(U,V,X,self.data_mean_) + X.T.dot(w) + b)-self.data_mean_.T.dot(w)
 
-        truncated_y = hat_y
+        truncated_y = hat_y.copy()
         if self.truncate_y:
             truncated_y[hat_y>1]=1
             truncated_y[hat_y<-1] = -1
@@ -522,9 +524,10 @@ class SLM(BaseEstimator, RegressorMixin):
                 XT_grad_t = numpy.asarray(X.T.dot(grad_t)) - self.data_mean_.T.dot(grad_t)
                 learning_rate_w_ = ( grad_t.T.dot( X_dy )/n + reg_w*numpy.sum(grad_t*w) )/( numpy.linalg.norm(XT_grad_t)**2/n + reg_w*numpy.linalg.norm(grad_t)**2+1e-10)
                 learning_rate_w_ = numpy.min([self.learning_rate,learning_rate_w_])
+                # learning_rate_w_ = self.learning_rate
                 w_new = w - learning_rate_w_*grad_t
                 hat_y = hat_y-learning_rate_w_*(XT_grad_t )
-                truncated_y = hat_y
+                truncated_y = hat_y.copy()
                 if self.truncate_y:
                     truncated_y[hat_y > 1] = 1
                     truncated_y[hat_y < -1] = -1
@@ -534,7 +537,7 @@ class SLM(BaseEstimator, RegressorMixin):
                 delta_b = float(numpy.sum(y - truncated_y))/n
                 b_new = b + delta_b
                 hat_y = hat_y + delta_b
-                truncated_y = hat_y
+                truncated_y = hat_y.copy()
                 if self.truncate_y:
                     truncated_y[hat_y > 1] = 1
                     truncated_y[hat_y < -1] = -1
@@ -545,22 +548,32 @@ class SLM(BaseEstimator, RegressorMixin):
             for als_count in xrange(self.als_max_iter_M):
                 dy = truncated_y -y
                 p0 = numpy.sum(dy)
-                # p1 = X.dot(dy) - self.data_mean_ * numpy.sum(dy)
-                # cache_1 = self.data_moment3 * p1 + p0
-                cache_1 = p0
+                p1 = X.dot(dy) - self.data_mean_ * numpy.sum(dy)
+                cache_1 = self.data_moment3 * p1 + p0
+                # cache_1 = p0
+                if self.U_not_initialized_:
+                    for init_U_ite in xrange(self.max_init_iter):
+                        ApA_dy_Ut = numpy.asarray(ApA_diag0_sparse(dy, U, X, self.data_mean_)) - cache_1 * U
+                        U_new = ApA_dy_Ut
+                        U,_ =  numpy.linalg.qr(U_new)
+                    pass # end for init_U_ite
+                    self.U_not_initialized_ = False
+                pass # end if self.U_not_initialized_
                 ApA_dy_Ut = numpy.asarray(ApA_diag0_sparse(dy, U, X, self.data_mean_)) - cache_1*U
-                grad_UV = (ApA_dy_Ut/n + reg_M*V) # grad
-                grad_diag = (numpy.asarray(X_power_2.dot(dy)))/n*U
-                grad_diag -= 2*self.data_mean_*(numpy.asarray(X.dot(dy)))/n*U
-                grad_diag += self.data_mean_**2 * numpy.sum(dy) / n * U
-                grad_t = grad_UV - grad_diag
+                grad_UV = (ApA_dy_Ut/(2*n) + reg_M*V) # grad
+                # grad_diag = (numpy.asarray(X_power_2.dot(dy)))/(2*n)*U
+                # grad_diag -= 2*self.data_mean_*(numpy.asarray(X.dot(dy)))/(2*n)*U
+                # grad_diag += self.data_mean_**2 * numpy.sum(dy) /(2*n) * U
+                # grad_t = grad_UV - grad_diag
+                grad_t = grad_UV
                 A_Ut_grad_t = numpy.asarray(A_diag0_sparse(U,grad_t,X,self.data_mean_))
 
                 learning_rate_M_ = (dy.T.dot(A_Ut_grad_t)/n + reg_M*numpy.sum(grad_t*V))/( numpy.linalg.norm(A_Ut_grad_t)**2/n + reg_M*numpy.linalg.norm(grad_t)**2+1e-8)
                 learning_rate_M_ = numpy.min([self.learning_rate, learning_rate_M_])
+                # learning_rate_M_ = self.learning_rate
                 V_new = V - learning_rate_M_*grad_t
                 hat_y = hat_y - learning_rate_M_*A_Ut_grad_t
-                truncated_y = hat_y
+                truncated_y = hat_y.copy()
                 if self.truncate_y:
                     truncated_y[hat_y > 1] = 1
                     truncated_y[hat_y < -1] = -1
@@ -571,6 +584,7 @@ class SLM(BaseEstimator, RegressorMixin):
                 U = U_new
                 V = V_new
             pass # end for als_count in xrange(self.als_max_iter_M):
+
         pass # end for t
 
         self.U_ = U

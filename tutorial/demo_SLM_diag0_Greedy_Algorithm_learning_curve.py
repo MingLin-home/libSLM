@@ -40,13 +40,16 @@ def train(export_filename):
     """
     for repeat_count in xrange(repeat_times):
         print 'generating training toy set'
-        n_trainset = 20 * rank_k * dim # size of training set
+        n_trainset = 40 * rank_k * dim # size of training set
         n_testset = 10000 # size of testing set
+
 
         # # ----- Generate sparse training/testing instance from Bernoulli distribution ----- #
         bernoulli_p = 0.1
         X = numpy.random.binomial(1,bernoulli_p,size=(n_trainset,dim))/numpy.sqrt(dim*bernoulli_p) # training set instances
         X_test = numpy.random.binomial(1, bernoulli_p, size=(n_testset, dim))/numpy.sqrt(dim*bernoulli_p) # testing set instances
+        X = sklearn.preprocessing.scale(X, axis=0)
+        X_test = sklearn.preprocessing.scale(X_test, axis=0)
 
         X = scipy.sparse.csr_matrix(X)
         X_test = scipy.sparse.csr_matrix(X_test)
